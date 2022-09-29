@@ -25,8 +25,8 @@ fn get_next_gen(grid: &Vec<Vec<i8>>) -> Vec<Vec<i8>> {
         for x in 0..cols {
             let cell_state = grid[y][x];
 
-            let mut live_neighbors = 0;
-
+            // count neighbors \\
+            let mut live_neighbors = -cell_state;
             for i in -1i16..=1 {
                 for j in -1i16..=1 {
                     let new_x = (x as i16) + i;
@@ -38,22 +38,25 @@ fn get_next_gen(grid: &Vec<Vec<i8>>) -> Vec<Vec<i8>> {
                 }
             }
 
-            live_neighbors -= cell_state;
-
+            // underpopulation \\
             if cell_state == 1 && live_neighbors < 2 {
                 next_gen[y][x] = 0;
             }
+            // overpopulation \\
             else if cell_state == 1 && live_neighbors > 3 {
                 next_gen[y][x] = 0;
             }
+            // reproduction \\
             else if cell_state == 0 && live_neighbors == 3 {
                 next_gen[y][x] = 1;
             }
+            // stable population \\
             else {
                 next_gen[y][x] = cell_state;
             }
         }
     }
+    // return \\
     next_gen
 }
 
@@ -62,10 +65,12 @@ pub fn run_gol<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
     // grid creation \\
     let (c, r) = size().unwrap();
     let (cols, rows) = ((c-2) as usize, (r-5) as usize);
-    let mut grid: Vec<Vec<i8>> = vec![vec![0; cols]; rows];
-    let mut old_grid: Vec<Vec<i8>> = vec![vec![0; cols]; rows];
+    let mut new_gen: Vec<Vec<i8>> = vec![vec![0; cols]; rows];
+    let mut mid_gen: Vec<(f64, f64)> = Vec::new();
+    let mut old_gen: Vec<(f64, f64)> = Vec::new();
 
     let mut paused: bool = true;
+    let mut history_on: bool = false;
     let mut last_tick = Instant::now();
     let tick_rate = Duration::from_millis(100);
     let mut frame_rate = Duration::from_millis(400);
@@ -85,31 +90,30 @@ pub fn run_gol<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
             f.render_widget(paragraph, chunks[0]);
             
             // canvas \\
-            let mut title = vec![
+            let pause_color = if paused {Color::Green} else {Color::Green};
+            let title = vec![
                 Span::raw("[Game of Life: "),
-                Span::styled("playing", Style::default().fg(Color::Green)),
-                Span::raw(format!("| Timer: {}]", running_time as u8))
+                Span::styled("playing", Style::default().fg(pause_color)),
+                Span::raw(format!("| Timer: {}]", running_time as u16))
             ];
-            if paused {
-                title = vec![
-                    Span::raw("[Game of Life: "),
-                    Span::styled("paused", Style::default().fg(Color::Red)),
-                    Span::raw(format!("| Timer: {}]", running_time as u8))
-                ];
-            }
             let canvas = Canvas::default()
                 .block(Block::default().title(title).borders(Borders::ALL))
                 .x_bounds([0.0, (cols-1) as f64])
                 .y_bounds([0.0, (rows-1) as f64])
                 .marker(symbols::Marker::Block)
                 .paint(|ctx| {
+                    if history_on {
+                        for (x, y) in old_gen.clone() {
+                            ctx.print(x as f64, y as f64, Span::styled("█", Style::default().fg(Color::Rgb(0, 50, 50))))
+                        }
+                        for (x, y) in mid_gen.clone() {
+                            ctx.print(x as f64, y as f64, Span::styled("█", Style::default().fg(Color::Rgb(0, 100, 100))))
+                        }
+                    }
                     for y in 0..rows {
                         for x in 0..cols {
-                            if old_grid[y][x] == 1 {
-                                ctx.print(x as f64, y as f64, Span::styled("█", Style::default().fg(Color::LightCyan)))
-                            }
-                            if grid[y][x] == 1 {
-                                ctx.print(x as f64, y as f64, Span::styled("█", Style::default().fg(Color::Cyan)))
+                            if new_gen[y][x] == 1 {
+                                ctx.print(x as f64, y as f64, Span::styled("█", Style::default().fg(Color::Rgb(0, 255, 255))))
                             }
                         }
                     }
@@ -129,17 +133,17 @@ pub fn run_gol<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
                 match key.code {
                     KeyCode::Char('q') => return Ok(()),
                     KeyCode::Char('p') => paused = !paused,
+                    KeyCode::Char('h') => history_on = !history_on,
                     KeyCode::Char('c') => {
-                        grid = vec![vec![0; cols]; rows];
-                        old_grid = vec![vec![0; cols]; rows];
+                        new_gen = vec![vec![0; cols]; rows];
                         paused = true;
                         running_time = 0.0;
                     }
                     KeyCode::Char('s') => {
-                        grid[cursor_y][cursor_x] = 1 - grid[cursor_y][cursor_x]
+                        new_gen[cursor_y][cursor_x] = 1 - new_gen[cursor_y][cursor_x]
                     }
                     KeyCode::Enter => {
-                        grid[cursor_y][cursor_x] = 1 - grid[cursor_y][cursor_x]
+                        new_gen[cursor_y][cursor_x] = 1 - new_gen[cursor_y][cursor_x]
                     }
                     KeyCode::Left => if cursor_x > 0 {cursor_x -= 1},
                     KeyCode::Right => if cursor_x < (cols-1) {cursor_x += 1},
@@ -159,8 +163,16 @@ pub fn run_gol<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
         // grid update \\
         if last_tick.elapsed() >= frame_rate {
             if !paused {
-                old_grid = grid.clone();
-                grid = get_next_gen(&grid);
+                old_gen = mid_gen.clone();
+                mid_gen = Vec::new();
+                for y in 0..rows {
+                    for x in 0..cols {
+                        if new_gen[y][x] == 1 {
+                            mid_gen.push((x as f64, y as f64));
+                        }
+                    }
+                }
+                new_gen = get_next_gen(&new_gen);
                 running_time += 0.4
             }
             last_tick = Instant::now();
